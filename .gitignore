@@ -1,0 +1,17 @@
+﻿# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit cache
+.streamlit/
+
+# Big model stuff (not needed for dashboard)
+bert_runs_weighted/**/hf_outputs/
+*.pt
+*.bin
+
+# Local zips & artifacts
+*.zip

@@ -1,0 +1,10 @@
+               precision    recall  f1-score   support
+
+          PHI       0.19      0.41      0.26        41
+          PII       0.83      0.69      0.75       240
+    financial       0.27      0.18      0.21        17
+non-sensitive       0.00      0.00      0.00         2
+
+     accuracy                           0.62       300
+    macro avg       0.32      0.32      0.31       300
+ weighted avg       0.70      0.62      0.65       300
