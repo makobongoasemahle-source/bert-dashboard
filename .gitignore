@@ -15,3 +15,13 @@ bert_runs_weighted/**/hf_outputs/
 
 # Local zips & artifacts
 *.zip
+# --- heavy model artifacts (never push) ---
+**/hf_outputs/
+**/checkpoint-*/
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# optional: don’t push local zips
+*.zip
