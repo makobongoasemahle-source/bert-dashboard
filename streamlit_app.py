@@ -1,9 +1,6 @@
 ﻿from __future__ import annotations
 from pathlib import Path
-import json
-import io
-import zipfile
-import mimetypes
+import json, io, zipfile, mimetypes, hashlib
 import streamlit as st
 
 # ---------------- basics ----------------
@@ -23,6 +20,21 @@ st.sidebar.write(
     "• Download light artifacts safely (large files are blocked to avoid memory errors)"
 )
 
+# ---------- small helpers for keys & listing ----------
+def _key_for(fp: Path, tag: str = "dl") -> str:
+    h = hashlib.md5(str(fp.resolve()).encode("utf-8")).hexdigest()[:10]
+    return f"{tag}_{h}"
+
+def _list_many(patterns: tuple[str, ...], bases: list[Path]) -> list[Path]:
+    seen = {}
+    for base in bases:
+        for pat in patterns:
+            for p in base.rglob(pat):
+                if p.is_file() or p.is_dir():
+                    seen[str(p.resolve()).lower()] = p
+    return sorted(seen.values(), key=lambda p: p.as_posix().lower())
+
+# ---------------- discover runs ----------------
 def find_run_dirs():
     runs = []
     for base in SEARCH_ROOTS:
@@ -46,9 +58,9 @@ choice = st.sidebar.selectbox("Select a run", labels, index=0)
 run_dir = run_dirs[labels.index(choice)]
 st.subheader(f"Selected: {choice}")
 
-# --------------- helpers ----------------
-def safe_download_button(label: str, fp: Path, mime: str | None = None):
-    """Only serve if file is reasonably small to avoid MemoryError."""
+# --------------- display helpers ----------------
+def safe_download_button(label: str, fp: Path, mime: str | None = None, key_tag: str = "dl"):
+    """Only serve if file is reasonably small to avoid MemoryError, and always give a unique key."""
     if not fp.exists():
         return
     size = fp.stat().st_size
@@ -59,6 +71,7 @@ def safe_download_button(label: str, fp: Path, mime: str | None = None):
             data=fp.read_bytes(),
             file_name=fp.name,
             mime=mime or mimetypes.guess_type(fp.name)[0] or "application/octet-stream",
+            key=_key_for(fp, key_tag),
         )
     else:
         st.warning(
@@ -74,18 +87,18 @@ def show_json_file(fp: Path, title: str | None = None):
                 st.json(json.load(f))
         except Exception:
             st.code(fp.read_text(encoding="utf-8"))
-        safe_download_button(f"Download {fp.name}", fp, "application/json")
+        safe_download_button(f"Download {fp.name}", fp, "application/json", key_tag="json")
 
 def show_text_file(fp: Path, title: str | None = None):
     if fp.exists():
         st.markdown(f"### {title or fp.name}")
         st.code(fp.read_text(encoding="utf-8"))
-        safe_download_button(f"Download {fp.name}", fp, "text/plain")
+        safe_download_button(f"Download {fp.name}", fp, "text/plain", key_tag="txt")
 
 def show_image_file(fp: Path, caption: str | None = None):
     if fp.exists():
         st.image(str(fp), caption=caption or fp.name, width="stretch")
-        safe_download_button(f"Download {fp.name}", fp)
+        safe_download_button(f"Download {fp.name}", fp, key_tag="img")
 
 def show_csv_preview(fp: Path, title: str | None = None, max_rows: int = 300):
     import pandas as pd
@@ -96,8 +109,12 @@ def show_csv_preview(fp: Path, title: str | None = None, max_rows: int = 300):
         if total > max_rows:
             st.info(f"Showing first {max_rows} of {total} rows.")
             df = df.head(max_rows)
-        st.dataframe(df, use_container_width=True)
-        safe_download_button(f"Download {fp.name}", fp, "text/csv")
+        # New API (no deprecation warning); fall back if needed
+        try:
+            st.dataframe(df, width="stretch")
+        except TypeError:
+            st.dataframe(df, use_container_width=True)
+        safe_download_button(f"Download {fp.name}", fp, "text/csv", key_tag="csv")
 
 def list_files(folder: Path, patterns: tuple[str, ...]):
     out = []
@@ -135,15 +152,13 @@ with st.expander("Other JSON/TXT artifacts", expanded=False):
 
 # ---------------- download this run as ZIP (no weights) ----------------
 st.markdown("### Download this run (ZIP, excludes model weights)")
-if st.button("Build ZIP for current run"):
-    # Build a temporary in-memory zip without hf_outputs/ or large blobs
+if st.button("Build ZIP for current run", key="zip_btn"):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
         total = 0
         for p in run_dir.rglob("*"):
             if p.is_dir():
                 continue
-            # Skip HuggingFace weights / checkpoints
             if "hf_outputs" in p.parts:
                 continue
             rel = p.relative_to(run_dir)
@@ -166,6 +181,7 @@ if st.button("Build ZIP for current run"):
             data=buf.getvalue(),
             file_name=f"{run_dir.name}_light.zip",
             mime="application/zip",
+            key="zip_download",
         )
 
 # ================================================================
@@ -175,33 +191,34 @@ st.header("Project-wide artifacts (root)")
 
 col1, col2 = st.columns(2)
 
-# ----- HTML reports -----
+# ----- HTML reports (recursive) -----
 with col1:
     st.subheader("HTML reports")
-    htmls = list_files(ROOT, ("report_*.html",))
+    htmls = _list_many(("report_*.html",), SEARCH_ROOTS)
     if not htmls:
         st.caption("No HTML reports found (report_*.html).")
     else:
         import streamlit.components.v1 as components
-        pick = st.selectbox("Preview report", [h.name for h in htmls], key="html_pick")
-        html_path = ROOT / pick
-        safe_download_button(f"Download {pick}", html_path, "text/html")
-        # Inline preview
+        labels = [str(p.relative_to(ROOT)) if ROOT in p.parents or p == ROOT else p.name for p in htmls]
+        pick = st.selectbox("Preview report", labels, key="html_pick")
+        html_path = htmls[labels.index(pick)]
+        safe_download_button(f"Download {html_path.name}", html_path, "text/html", key_tag="html")
         try:
             components.html(html_path.read_text("utf-8"), height=600, scrolling=True)
         except Exception:
             st.info("HTML too large or contains external refs. Download instead.")
 
-# ----- ZIP reports -----
+# ----- ZIP reports (recursive) -----
 with col2:
     st.subheader("Zipped reports")
-    zips = list_files(ROOT, ("evaluation_report_*.zip",))
+    zips = _list_many(("evaluation_report_*.zip",), SEARCH_ROOTS)
     if not zips:
         st.caption("No ZIPs found (evaluation_report_*.zip).")
     else:
-        pick_zip = st.selectbox("Select ZIP", [z.name for z in zips], key="zip_pick")
-        zp = ROOT / pick_zip
-        safe_download_button(f"Download {pick_zip}", zp, "application/zip")
+        labels = [str(p.relative_to(ROOT)) if ROOT in p.parents or p == ROOT else p.name for p in zips]
+        pick_zip = st.selectbox("Select ZIP", labels, key="zip_pick")
+        zp = zips[labels.index(pick_zip)]
+        safe_download_button(f"Download {zp.name}", zp, "application/zip", key_tag="zip_root")
         with st.expander("View ZIP contents"):
             try:
                 with zipfile.ZipFile(io.BytesIO(zp.read_bytes()), "r") as zf:
@@ -212,7 +229,7 @@ with col2:
             except Exception:
                 st.info("ZIP too large to preview in-memory; download instead.")
 
-# ----- Root CSV previews -----
+# ----- Root CSV previews (root-only is fine) -----
 st.subheader("Dataset & evaluation CSVs")
 root_csvs = list_files(
     ROOT,
@@ -234,14 +251,16 @@ else:
     pick_csv = st.selectbox("Pick a CSV to preview", [c.name for c in root_csvs], key="csv_pick")
     show_csv_preview(ROOT / pick_csv, title=pick_csv)
 
-# ----- Plot galleries -----
+# ----- Plot galleries (recursive; only dirs that actually contain images) -----
 st.subheader("Plot galleries")
-plot_dirs = [d for d in ROOT.iterdir() if d.is_dir() and d.name.startswith(("plots_", "eval_plots_"))]
+all_plot_dirs = _list_many(("plots_*", "eval_plots_*"), SEARCH_ROOTS)
+plot_dirs = [d for d in all_plot_dirs if d.is_dir() and any(d.glob("*.png")) or any(d.glob("*.jpg"))]
 if not plot_dirs:
     st.caption("No plot folders (plots_* / eval_plots_*) found.")
 else:
-    pick_plot_dir = st.selectbox("Pick a plot folder", [d.name for d in plot_dirs], key="plot_dir_pick")
-    pdir = ROOT / pick_plot_dir
+    labels = [str(d.relative_to(ROOT)) if ROOT in d.parents or d == ROOT else d.name for d in plot_dirs]
+    pick_plot_dir = st.selectbox("Pick a plot folder", labels, key="plot_dir_pick")
+    pdir = plot_dirs[labels.index(pick_plot_dir)]
     imgs = list_files(pdir, ("*.png","*.jpg","*.jpeg"))
     if not imgs:
         st.caption("No images in selected folder.")
@@ -251,11 +270,12 @@ else:
             with cols[i % 3]:
                 show_image_file(img)
 
-# ----- Quick folder browser (advanced) -----
+# ----- Quick folder browser (recursive list) -----
 st.subheader("Browse any folder")
-all_dirs = [ROOT] + [d for d in ROOT.iterdir() if d.is_dir()]
-pick_browse = st.selectbox("Folder", [str(d.relative_to(ROOT)) for d in all_dirs], key="browse_pick")
-browse_dir = ROOT / pick_browse
+all_dirs = [ROOT] + [d for d in ROOT.rglob("*") if d.is_dir()]
+label_dirs = [str(d.relative_to(ROOT)) for d in all_dirs]
+pick_browse = st.selectbox("Folder", label_dirs, key="browse_pick")
+browse_dir = all_dirs[label_dirs.index(pick_browse)]
 
 with st.expander(f"Listing: {browse_dir}", expanded=False):
     files = sorted([p for p in browse_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower())
@@ -278,9 +298,9 @@ with st.expander(f"Listing: {browse_dir}", expanded=False):
                 components.html(fp.read_text("utf-8"), height=450, scrolling=True)
             except Exception:
                 st.info("HTML too large to preview; download instead.")
-            safe_download_button(f"Download {fp.name}", fp, "text/html")
+            safe_download_button(f"Download {fp.name}", fp, "text/html", key_tag="html_browse")
         elif ext == ".zip":
             st.markdown(f"#### {fp.name}")
-            safe_download_button(f"Download {fp.name}", fp, "application/zip")
+            safe_download_button(f"Download {fp.name}", fp, "application/zip", key_tag="zip_browse")
         else:
             st.write(f"• {fp.name} ({ext or 'no extension'})")
