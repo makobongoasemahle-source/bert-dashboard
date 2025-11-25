@@ -5,7 +5,8 @@ import streamlit as st
 
 # ---------------- basics ----------------
 ROOT = Path(__file__).resolve().parent
-SEARCH_ROOTS = [ROOT, ROOT.parent]  # project root + one level up
+# search both the repo root and one level up (covers things inside bert_project_starter/)
+SEARCH_ROOTS = [ROOT, ROOT.parent]
 
 MAX_INLINE_BYTES = 25 * 1024 * 1024   # 25MB safety limit for inline download_button
 MAX_ZIP_BYTES    = 80 * 1024 * 1024   # 80MB safety limit for in-memory ZIPs
@@ -22,16 +23,17 @@ st.sidebar.write(
 
 # ---------- small helpers for keys & listing ----------
 def _key_for(fp: Path, tag: str = "dl") -> str:
+    """Stable unique key per file *and* section."""
     h = hashlib.md5(str(fp.resolve()).encode("utf-8")).hexdigest()[:10]
     return f"{tag}_{h}"
 
 def _list_many(patterns: tuple[str, ...], bases: list[Path]) -> list[Path]:
+    """Recursive, de-duplicated listing across bases."""
     seen = {}
     for base in bases:
         for pat in patterns:
             for p in base.rglob(pat):
-                if p.is_file() or p.is_dir():
-                    seen[str(p.resolve()).lower()] = p
+                seen[str(p.resolve()).lower()] = p
     return sorted(seen.values(), key=lambda p: p.as_posix().lower())
 
 # ---------------- discover runs ----------------
@@ -60,7 +62,7 @@ st.subheader(f"Selected: {choice}")
 
 # --------------- display helpers ----------------
 def safe_download_button(label: str, fp: Path, mime: str | None = None, key_tag: str = "dl"):
-    """Only serve if file is reasonably small to avoid MemoryError, and always give a unique key."""
+    """Serve only if small enough; always provide unique key to avoid DuplicateElementId."""
     if not fp.exists():
         return
     size = fp.stat().st_size
@@ -79,7 +81,7 @@ def safe_download_button(label: str, fp: Path, mime: str | None = None, key_tag:
             f"host it externally (Drive/Dropbox) or shrink it before exposing here."
         )
 
-def show_json_file(fp: Path, title: str | None = None):
+def show_json_file(fp: Path, title: str | None = None, key_tag: str = "json"):
     if fp.exists():
         st.markdown(f"### {title or fp.name}")
         try:
@@ -87,20 +89,20 @@ def show_json_file(fp: Path, title: str | None = None):
                 st.json(json.load(f))
         except Exception:
             st.code(fp.read_text(encoding="utf-8"))
-        safe_download_button(f"Download {fp.name}", fp, "application/json", key_tag="json")
+        safe_download_button(f"Download {fp.name}", fp, "application/json", key_tag=key_tag)
 
-def show_text_file(fp: Path, title: str | None = None):
+def show_text_file(fp: Path, title: str | None = None, key_tag: str = "txt"):
     if fp.exists():
         st.markdown(f"### {title or fp.name}")
         st.code(fp.read_text(encoding="utf-8"))
-        safe_download_button(f"Download {fp.name}", fp, "text/plain", key_tag="txt")
+        safe_download_button(f"Download {fp.name}", fp, "text/plain", key_tag=key_tag)
 
-def show_image_file(fp: Path, caption: str | None = None):
+def show_image_file(fp: Path, caption: str | None = None, key_tag: str = "img"):
     if fp.exists():
         st.image(str(fp), caption=caption or fp.name, width="stretch")
-        safe_download_button(f"Download {fp.name}", fp, key_tag="img")
+        safe_download_button(f"Download {fp.name}", fp, key_tag=key_tag)
 
-def show_csv_preview(fp: Path, title: str | None = None, max_rows: int = 300):
+def show_csv_preview(fp: Path, title: str | None = None, max_rows: int = 300, key_tag: str = "csv"):
     import pandas as pd
     if fp.exists():
         st.markdown(f"### {title or fp.name}")
@@ -109,12 +111,11 @@ def show_csv_preview(fp: Path, title: str | None = None, max_rows: int = 300):
         if total > max_rows:
             st.info(f"Showing first {max_rows} of {total} rows.")
             df = df.head(max_rows)
-        # New API (no deprecation warning); fall back if needed
         try:
             st.dataframe(df, width="stretch")
         except TypeError:
             st.dataframe(df, use_container_width=True)
-        safe_download_button(f"Download {fp.name}", fp, "text/csv", key_tag="csv")
+        safe_download_button(f"Download {fp.name}", fp, "text/csv", key_tag=key_tag)
 
 def list_files(folder: Path, patterns: tuple[str, ...]):
     out = []
@@ -125,17 +126,17 @@ def list_files(folder: Path, patterns: tuple[str, ...]):
 
 # ---------------- run-level: JSON metrics ----------------
 for name in ["metrics.json", "test_metrics.json"]:
-    show_json_file(run_dir / name, title=name)
+    show_json_file(run_dir / name, title=name, key_tag="json_run")
 
 # ---------------- run-level: images ----------------
 for img in ["confusion_matrix.png", "val_accuracy_curve.png", "val_f1_curve.png", "loss_curve.png"]:
-    show_image_file(run_dir / img, caption=img)
+    show_image_file(run_dir / img, caption=img, key_tag="img_run")
 
 # ---------------- run-level: classification report ----------------
-show_text_file(run_dir / "classification_report.txt", title="classification_report.txt")
+show_text_file(run_dir / "classification_report.txt", title="classification_report.txt", key_tag="txt_run")
 
 # ---------------- run-level: predictions table ----------------
-show_csv_preview(run_dir / "preds_test.csv", title="preds_test.csv")
+show_csv_preview(run_dir / "preds_test.csv", title="preds_test.csv", key_tag="csv_run")
 
 # ---------------- run-level: other json/txt ----------------
 with st.expander("Other JSON/TXT artifacts", expanded=False):
@@ -146,9 +147,9 @@ with st.expander("Other JSON/TXT artifacts", expanded=False):
     else:
         for fp in others:
             if fp.suffix.lower() == ".json":
-                show_json_file(fp)
+                show_json_file(fp, key_tag="json_run_other")
             else:
-                show_text_file(fp)
+                show_text_file(fp, key_tag="txt_run_other")
 
 # ---------------- download this run as ZIP (no weights) ----------------
 st.markdown("### Download this run (ZIP, excludes model weights)")
@@ -159,6 +160,7 @@ if st.button("Build ZIP for current run", key="zip_btn"):
         for p in run_dir.rglob("*"):
             if p.is_dir():
                 continue
+            # skip heavy HF weights/checkpoints
             if "hf_outputs" in p.parts:
                 continue
             rel = p.relative_to(run_dir)
@@ -199,10 +201,10 @@ with col1:
         st.caption("No HTML reports found (report_*.html).")
     else:
         import streamlit.components.v1 as components
-        labels = [str(p.relative_to(ROOT)) if ROOT in p.parents or p == ROOT else p.name for p in htmls]
-        pick = st.selectbox("Preview report", labels, key="html_pick")
-        html_path = htmls[labels.index(pick)]
-        safe_download_button(f"Download {html_path.name}", html_path, "text/html", key_tag="html")
+        labels_html = [str(p.relative_to(ROOT)) if (p == ROOT or ROOT in p.parents) else p.name for p in htmls]
+        pick = st.selectbox("Preview report", labels_html, key="html_pick")
+        html_path = htmls[labels_html.index(pick)]
+        safe_download_button(f"Download {html_path.name}", html_path, "text/html", key_tag="html_root")
         try:
             components.html(html_path.read_text("utf-8"), height=600, scrolling=True)
         except Exception:
@@ -215,9 +217,9 @@ with col2:
     if not zips:
         st.caption("No ZIPs found (evaluation_report_*.zip).")
     else:
-        labels = [str(p.relative_to(ROOT)) if ROOT in p.parents or p == ROOT else p.name for p in zips]
-        pick_zip = st.selectbox("Select ZIP", labels, key="zip_pick")
-        zp = zips[labels.index(pick_zip)]
+        labels_zip = [str(p.relative_to(ROOT)) if (p == ROOT or ROOT in p.parents) else p.name for p in zips]
+        pick_zip = st.selectbox("Select ZIP", labels_zip, key="zip_pick")
+        zp = zips[labels_zip.index(pick_zip)]
         safe_download_button(f"Download {zp.name}", zp, "application/zip", key_tag="zip_root")
         with st.expander("View ZIP contents"):
             try:
@@ -229,7 +231,7 @@ with col2:
             except Exception:
                 st.info("ZIP too large to preview in-memory; download instead.")
 
-# ----- Root CSV previews (root-only is fine) -----
+# ----- Root CSV previews (root-only) -----
 st.subheader("Dataset & evaluation CSVs")
 root_csvs = list_files(
     ROOT,
@@ -249,18 +251,21 @@ if not root_csvs:
     st.caption("No matching CSVs found.")
 else:
     pick_csv = st.selectbox("Pick a CSV to preview", [c.name for c in root_csvs], key="csv_pick")
-    show_csv_preview(ROOT / pick_csv, title=pick_csv)
+    show_csv_preview(ROOT / pick_csv, title=pick_csv, key_tag="csv_root")
 
 # ----- Plot galleries (recursive; only dirs that actually contain images) -----
 st.subheader("Plot galleries")
 all_plot_dirs = _list_many(("plots_*", "eval_plots_*"), SEARCH_ROOTS)
-plot_dirs = [d for d in all_plot_dirs if d.is_dir() and any(d.glob("*.png")) or any(d.glob("*.jpg"))]
+plot_dirs = [
+    d for d in all_plot_dirs
+    if d.is_dir() and (any(d.glob("*.png")) or any(d.glob("*.jpg")) or any(d.glob("*.jpeg")))
+]
 if not plot_dirs:
     st.caption("No plot folders (plots_* / eval_plots_*) found.")
 else:
-    labels = [str(d.relative_to(ROOT)) if ROOT in d.parents or d == ROOT else d.name for d in plot_dirs]
-    pick_plot_dir = st.selectbox("Pick a plot folder", labels, key="plot_dir_pick")
-    pdir = plot_dirs[labels.index(pick_plot_dir)]
+    labels_plot = [str(d.relative_to(ROOT)) if (d == ROOT or ROOT in d.parents) else d.name for d in plot_dirs]
+    pick_plot_dir = st.selectbox("Pick a plot folder", labels_plot, key="plot_dir_pick")
+    pdir = plot_dirs[labels_plot.index(pick_plot_dir)]
     imgs = list_files(pdir, ("*.png","*.jpg","*.jpeg"))
     if not imgs:
         st.caption("No images in selected folder.")
@@ -268,9 +273,9 @@ else:
         cols = st.columns(3)
         for i, img in enumerate(imgs):
             with cols[i % 3]:
-                show_image_file(img)
+                show_image_file(img, key_tag="img_plot")
 
-# ----- Quick folder browser (recursive list) -----
+# ----- Quick folder browser (recursive) -----
 st.subheader("Browse any folder")
 all_dirs = [ROOT] + [d for d in ROOT.rglob("*") if d.is_dir()]
 label_dirs = [str(d.relative_to(ROOT)) for d in all_dirs]
@@ -284,13 +289,13 @@ with st.expander(f"Listing: {browse_dir}", expanded=False):
     for fp in files:
         ext = fp.suffix.lower()
         if ext in {".png", ".jpg", ".jpeg"}:
-            show_image_file(fp)
+            show_image_file(fp, key_tag="img_browse")
         elif ext == ".csv":
-            show_csv_preview(fp)
+            show_csv_preview(fp, key_tag="csv_browse")
         elif ext == ".json":
-            show_json_file(fp)
+            show_json_file(fp, key_tag="json_browse")
         elif ext in {".txt", ".log"}:
-            show_text_file(fp)
+            show_text_file(fp, key_tag="txt_browse")
         elif ext == ".html":
             import streamlit.components.v1 as components
             st.markdown(f"#### {fp.name}")
